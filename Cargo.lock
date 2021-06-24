@@ -63,6 +63,9 @@ dependencies = [
  "inflate",
  "jsonwebtoken",
  "quircs",
+ "serde",
+ "serde_derive",
+ "serde_json",
 ]
 
 [[package]]

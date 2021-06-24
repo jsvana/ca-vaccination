@@ -1,11 +1,98 @@
+use serde_derive::Deserialize;
+
+#[derive(Debug, Deserialize)]
+struct Name {
+    family: String,
+    given: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VaccineCoding {
+    system: String,
+    code: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct VaccineCode {
+    coding: Vec<VaccineCoding>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Patient {
+    reference: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct Actor {
+    display: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct Performer {
+    actor: Actor,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "resourceType", rename_all = "camelCase")]
+enum Resource {
+    #[serde(rename = "Patient")]
+    Patient {
+        name: Vec<Name>,
+        #[serde(rename = "birthDate")]
+        birth_date: String,
+    },
+    #[serde(rename = "Immunization")]
+    Immunization {
+        #[serde(rename = "lotNumber")]
+        lot_number: String,
+        status: String,
+        #[serde(rename = "vaccineCode")]
+        vaccine_code: VaccineCode,
+        patient: Patient,
+        #[serde(rename = "occurrenceDateTime")]
+        occurrence_date_time: String,
+        performer: Vec<Performer>,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Entry {
+    full_url: String,
+    resource: Resource,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FhirBundle {
+    resource_type: String,
+    r#type: String,
+    entry: Vec<Entry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CredentialSubject {
+    fhir_version: String,
+    fhir_bundle: FhirBundle,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Vc {
+    r#type: Vec<String>,
+    credential_subject: CredentialSubject,
+}
+
+#[derive(Debug, Deserialize)]
 struct Body {
     iss: String,
     nbf: i32,
-    vc: ...,
+    vc: Vc,
 }
 
 fn main() {
-    let img = image::open("/Users/jsvana/Desktop/ca_qr.png").unwrap();
+    let img = image::open("/home/jsvana/Downloads/ca_qr.png").unwrap();
 
     // convert to gray scale
     let img_gray = img.into_luma8();
@@ -46,6 +133,27 @@ fn main() {
         let decoded = inflate::inflate_bytes(&contents).unwrap();
         let decoded = std::str::from_utf8(&decoded).unwrap();
 
-        println!("{}", decoded);
+        let data: Body = serde_json::from_str(&decoded).expect("failed to deserialize");
+
+        for entry in data.vc.credential_subject.fhir_bundle.entry {
+            match entry.resource {
+                Resource::Patient { name, .. } => {
+                    let name = &name[0];
+                    println!("Patient: {} {}", name.given.join(" "), name.family);
+                }
+                Resource::Immunization {
+                    lot_number,
+                    status,
+                    occurrence_date_time,
+                    performer,
+                    ..
+                } => {
+                    println!(
+                        "Immunization: {}, {} by {} on {}",
+                        lot_number, status, performer[0].actor.display, occurrence_date_time
+                    );
+                }
+            }
+        }
     }
 }
