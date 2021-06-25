@@ -1,3 +1,11 @@
+use std::char::from_u32;
+use std::env;
+use std::str::from_utf8;
+
+use anyhow::{anyhow, Context, Result};
+use base64::{decode_config, URL_SAFE_NO_PAD};
+use inflate::inflate_bytes;
+use quircs::{Code, Quirc};
 use serde_derive::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -91,52 +99,10 @@ struct Body {
     vc: Vc,
 }
 
-fn main() {
-    let img = image::open("/home/jsvana/Downloads/ca_qr.png").unwrap();
-
-    // convert to gray scale
-    let img_gray = img.into_luma8();
-
-    // create a decoder
-    let mut decoder = quircs::Quirc::default();
-
-    // identify all qr codes
-    let codes = decoder.identify(
-        img_gray.width() as usize,
-        img_gray.height() as usize,
-        &img_gray,
-    );
-
-    for code in codes {
-        let code = code.expect("failed to extract qr code");
-        let decoded = code.decode().expect("failed to decode qr code");
-        let code = std::str::from_utf8(&decoded.payload).unwrap();
-
-        let parts: Vec<&str> = code.split('/').collect();
-
-        let digits = parts.get(1).expect("malformed token");
-
-        let mut letters: Vec<char> = Vec::new();
-
-        for chunk in digits.chars().collect::<Vec<char>>().chunks(2) {
-            let chunk: String = chunk.iter().collect();
-            let chunk_as_int = chunk.parse::<u32>().expect("failed to parse int");
-
-            letters.push(std::char::from_u32(chunk_as_int + 45).expect("unknown char"));
-        }
-
-        let output: String = letters.into_iter().collect();
-
-        let parts: Vec<&str> = output.split('.').collect();
-        let contents = base64::decode_config(parts[1], base64::URL_SAFE_NO_PAD)
-            .expect("failed to decode base64");
-        let decoded = inflate::inflate_bytes(&contents).unwrap();
-        let decoded = std::str::from_utf8(&decoded).unwrap();
-
-        let data: Body = serde_json::from_str(&decoded).expect("failed to deserialize");
-
-        for entry in data.vc.credential_subject.fhir_bundle.entry {
-            match entry.resource {
+impl Body {
+    fn print(&self) {
+        for entry in &self.vc.credential_subject.fhir_bundle.entry {
+            match &entry.resource {
                 Resource::Patient { name, .. } => {
                     let name = &name[0];
                     println!("Patient: {} {}", name.given.join(" "), name.family);
@@ -150,10 +116,65 @@ fn main() {
                 } => {
                     println!(
                         "Immunization: {}, {} by {} on {}",
-                        lot_number, status, performer[0].actor.display, occurrence_date_time
+                        lot_number.trim(),
+                        status,
+                        performer[0].actor.display,
+                        occurrence_date_time
                     );
                 }
             }
         }
     }
+}
+
+fn decode(code: Code) -> Result<Body> {
+    let decoded = code.decode().context("failed to decode qr code")?;
+    let code = from_utf8(&decoded.payload).context("failed to parse UTF-8")?;
+
+    let parts: Vec<&str> = code.split('/').collect();
+
+    let digits = parts.get(1).ok_or_else(|| anyhow!("malformed token"))?;
+
+    let mut letters: Vec<char> = Vec::new();
+
+    for chunk in digits.chars().collect::<Vec<char>>().chunks(2) {
+        let chunk: String = chunk.iter().collect();
+        let chunk_as_int = chunk.parse::<u32>().context("failed to parse int")?;
+
+        letters.push(from_u32(chunk_as_int + 45).context("unknown char")?);
+    }
+
+    let output: String = letters.into_iter().collect();
+
+    let parts: Vec<&str> = output.split('.').collect();
+    let contents = decode_config(parts[1], URL_SAFE_NO_PAD).context("failed to decode base64")?;
+    let decoded = inflate_bytes(&contents)
+        .map_err(|e| anyhow!("failed to inflate compressed data: {}", e))?;
+    let decoded = from_utf8(&decoded).context("failed to parse UTF-8")?;
+
+    serde_json::from_str(&decoded).context("failed to deserialize")
+}
+
+fn main() -> Result<()> {
+    let args: Vec<String> = env::args().collect();
+    let path = args
+        .get(1)
+        .ok_or_else(|| anyhow!("Usage: cargo run <qr_code_path>"))?;
+    let img = image::open(path)?;
+
+    let img_gray = img.into_luma8();
+    let mut decoder = Quirc::default();
+    let codes = decoder.identify(
+        img_gray.width() as usize,
+        img_gray.height() as usize,
+        &img_gray,
+    );
+
+    for code in codes {
+        let code = code.context("failed to extract qr code")?;
+        let body = decode(code)?;
+        body.print();
+    }
+
+    Ok(())
 }
